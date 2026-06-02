@@ -34,7 +34,7 @@ App Router with TypeScript and Tailwind CSS v4. Path alias `@/*` → `src/*`.
 - `src/app/api/rules/[id]/route.ts` — `DELETE` a rule by id
 - `src/lib/supabase.ts` — Supabase server client (service role)
 
-When a rule is added, the API embeds it with `gemini-embedding-exp-03-07` (768 dims) and stores the vector in Supabase `rules` table.
+When a rule is added, the API embeds it with `gemini-embedding-2` (768 dims) and stores the vector in Supabase `rules` table.
 
 ### `worker/` — Cloudflare Worker (backend review engine)
 
@@ -92,4 +92,4 @@ LANGSMITH_API_KEY
 ## Supabase Schema
 
 Run `supabase-setup.sql` once in the Supabase SQL editor before first use.
-Key objects: `rules` table, `ivfflat` index on `embedding vector(768)`, `match_rules` RPC function.
+Key objects: `rules` table, `ivfflat` index on `embedding vector(3072)`, `match_rules` RPC function.

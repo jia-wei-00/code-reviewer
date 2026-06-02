@@ -32,7 +32,7 @@ GitHub PR comment
 |---|---|
 | Rules UI | Next.js 16 (App Router) + Tailwind CSS v4 |
 | Vector store | Supabase pgvector |
-| Embeddings | `gemini-embedding-exp-03-07` (768-dim) |
+| Embeddings | `gemini-embedding-2` (3072-dim) |
 | LLM | `gemma-4-31b-it` via Google AI |
 | LLM orchestration | LangChain (`@langchain/google-genai`) |
 | Observability | LangSmith |

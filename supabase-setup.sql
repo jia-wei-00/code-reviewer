@@ -4,7 +4,8 @@
 create extension if not exists vector;
 
 -- 2. Rules table
---    gemini-embedding-exp-03-07 outputs 768 dimensions
+--    gemini-embedding-2 outputs 3072 dimensions
+--    No ivfflat index — ivfflat caps at 2000 dims; sequential scan is fast for small rule sets
 create table if not exists rules (
   id         uuid primary key default gen_random_uuid(),
   content    text not null,
@@ -12,18 +13,13 @@ create table if not exists rules (
                'security', 'performance', 'style',
                'best-practices', 'architecture', 'testing'
              )),
-  embedding  vector(768),
+  embedding  vector(3072),
   created_at timestamptz default now()
 );
 
--- 3. Vector similarity index
-create index if not exists rules_embedding_idx
-  on rules using ivfflat (embedding vector_cosine_ops)
-  with (lists = 100);
-
--- 4. match_rules RPC — called by the Cloudflare Worker
+-- 3. match_rules RPC — called by the Cloudflare Worker
 create or replace function match_rules(
-  query_embedding vector(768),
+  query_embedding vector(3072),
   match_threshold float default 0.5,
   match_count     int   default 10
 )

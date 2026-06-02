@@ -15,7 +15,7 @@ export async function matchRules(
   threshold = 0.5
 ): Promise<MatchedRule[]> {
   const embeddings = new GoogleGenerativeAIEmbeddings({
-    model: "gemini-embedding-exp-03-07",
+    model: "gemini-embedding-2",
     apiKey: env.GOOGLE_API_KEY,
   });
 
