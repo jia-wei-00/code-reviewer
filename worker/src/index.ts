@@ -5,6 +5,10 @@ import type { Env } from "./types";
 
 export type { Env };
 
+function field(obj: object, key: string): unknown {
+  return (obj as Record<string, unknown>)[key];
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -29,17 +33,44 @@ export default {
     const event = request.headers.get("x-github-event");
     if (event !== "pull_request") return new Response("OK", { status: 200 });
 
-    const action = payload.action as string;
+    const action = payload.action;
     if (action !== "opened" && action !== "synchronize") {
       return new Response("OK", { status: 200 });
     }
 
-    const pr = payload.pull_request as Record<string, unknown>;
-    const repo = payload.repository as Record<string, unknown>;
-    const owner = (repo.owner as Record<string, string>).login;
-    const repoName = repo.name as string;
-    const prNumber = pr.number as number;
-    const commitId = (pr.head as Record<string, string>).sha;
+    const pr = payload.pull_request;
+    const repo = payload.repository;
+
+    if (
+      typeof pr !== "object" || pr === null ||
+      typeof repo !== "object" || repo === null
+    ) {
+      return new Response("Bad request", { status: 400 });
+    }
+
+    const repoOwner = field(repo, "owner");
+    const head = field(pr, "head");
+
+    if (
+      typeof repoOwner !== "object" || repoOwner === null ||
+      typeof head !== "object" || head === null
+    ) {
+      return new Response("Bad request", { status: 400 });
+    }
+
+    const owner = field(repoOwner, "login");
+    const repoName = field(repo, "name");
+    const prNumber = field(pr, "number");
+    const commitId = field(head, "sha");
+
+    if (
+      typeof owner !== "string" ||
+      typeof repoName !== "string" ||
+      typeof prNumber !== "number" ||
+      typeof commitId !== "string"
+    ) {
+      return new Response("Bad request", { status: 400 });
+    }
 
     ctx.waitUntil(
       (async () => {
