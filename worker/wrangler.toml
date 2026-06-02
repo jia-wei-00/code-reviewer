@@ -6,6 +6,14 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 LANGSMITH_PROJECT = "code-reviewer"
 
+[[durable_objects.bindings]]
+name = "Sandbox"
+class_name = "Sandbox"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["Sandbox"]
+
 # Set the following via: wrangler secret put <NAME>
 #   GOOGLE_API_KEY
 #   SUPABASE_URL
