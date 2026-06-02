@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem C:\\\\vscode\\\\code-reviewer -Exclude node_modules | ForEach-Object { $_.Name })",
+      "PowerShell(Get-ChildItem C:\\\\vscode\\\\code-reviewer\\\\src -Recurse | ForEach-Object { $_.FullName.Replace\\('C:\\\\vscode\\\\code-reviewer\\\\', ''\\) })",
+      "PowerShell(New-Item *)"
+    ]
+  }
+}

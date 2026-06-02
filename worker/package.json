@@ -1,0 +1,21 @@
+{
+  "name": "code-reviewer-worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.1.48",
+    "@langchain/google-genai": "^2.1.31",
+    "@supabase/supabase-js": "^2.106.2",
+    "langsmith": "^0.3.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250430.0",
+    "typescript": "^5.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

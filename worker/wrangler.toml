@@ -1,0 +1,15 @@
+name = "code-reviewer-worker"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+LANGSMITH_PROJECT = "code-reviewer"
+
+# Set the following via: wrangler secret put <NAME>
+#   GOOGLE_API_KEY
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_ROLE_KEY
+#   GITHUB_TOKEN
+#   GITHUB_WEBHOOK_SECRET
+#   LANGSMITH_API_KEY

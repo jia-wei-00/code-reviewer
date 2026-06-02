@@ -1,65 +1,171 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useState } from "react";
+
+const CATEGORIES = [
+  "security",
+  "performance",
+  "style",
+  "best-practices",
+  "architecture",
+  "testing",
+] as const;
+
+type Category = (typeof CATEGORIES)[number];
+
+type Rule = {
+  id: string;
+  content: string;
+  category: Category;
+  created_at: string;
+};
 
 export default function Home() {
+  const [rules, setRules] = useState<Rule[]>([]);
+  const [content, setContent] = useState("");
+  const [category, setCategory] = useState<Category>("best-practices");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadRules();
+  }, []);
+
+  async function loadRules() {
+    const res = await fetch("/api/rules");
+    if (res.ok) setRules(await res.json());
+  }
+
+  async function handleAdd(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, category }),
+      });
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.error ?? "Failed to add rule");
+      }
+      const newRule: Rule = await res.json();
+      setRules((prev) => [newRule, ...prev]);
+      setContent("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    const res = await fetch(`/api/rules/${id}`, { method: "DELETE" });
+    if (res.ok) setRules((prev) => prev.filter((r) => r.id !== id));
+  }
+
+  const grouped = CATEGORIES.reduce(
+    (acc, cat) => {
+      acc[cat] = rules.filter((r) => r.category === cat);
+      return acc;
+    },
+    {} as Record<Category, Rule[]>
+  );
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 py-12 px-4">
+      <div className="max-w-2xl mx-auto space-y-10">
+        <div>
+          <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
+            Code Review Rules
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="text-sm text-zinc-500 mt-1">
+            Rules are embedded and stored in Supabase. The reviewer retrieves
+            relevant ones per PR.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        <form
+          onSubmit={handleAdd}
+          className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 space-y-3"
+        >
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder="e.g. Never store secrets in environment variables committed to the repo."
+            rows={3}
+            required
+            className="w-full text-sm bg-transparent border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-zinc-400 dark:focus:ring-zinc-500 placeholder:text-zinc-400"
+          />
+
+          {error && <p className="text-xs text-red-500">{error}</p>}
+
+          <div className="flex items-center gap-3">
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value as Category)}
+              className="text-sm bg-transparent border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400 dark:focus:ring-zinc-500"
+            >
+              {CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="submit"
+              disabled={submitting || !content.trim()}
+              className="ml-auto text-sm font-medium px-4 py-2 rounded-lg bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-900 hover:bg-zinc-700 dark:hover:bg-zinc-200 disabled:opacity-40 transition-colors"
+            >
+              {submitting ? "Embedding…" : "Add Rule"}
+            </button>
+          </div>
+        </form>
+
+        <div className="space-y-8">
+          {CATEGORIES.map((cat) => {
+            const catRules = grouped[cat];
+            if (!catRules.length) return null;
+            return (
+              <section key={cat}>
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-400 mb-3">
+                  {cat}
+                  <span className="ml-2 font-normal normal-case tracking-normal text-zinc-400">
+                    ({catRules.length})
+                  </span>
+                </h2>
+                <ul className="space-y-2">
+                  {catRules.map((rule) => (
+                    <li
+                      key={rule.id}
+                      className="flex items-start gap-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg px-4 py-3"
+                    >
+                      <span className="flex-1 text-sm text-zinc-700 dark:text-zinc-300 leading-relaxed">
+                        {rule.content}
+                      </span>
+                      <button
+                        onClick={() => handleDelete(rule.id)}
+                        aria-label="Delete rule"
+                        className="shrink-0 text-zinc-300 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 transition-colors text-lg leading-none"
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
+
+          {rules.length === 0 && (
+            <p className="text-sm text-zinc-400 text-center py-8">
+              No rules yet. Add one above.
+            </p>
+          )}
         </div>
-      </main>
+      </div>
     </div>
   );
 }
