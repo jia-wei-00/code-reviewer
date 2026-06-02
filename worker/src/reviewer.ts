@@ -2,7 +2,8 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { Client as LangSmithClient } from "langsmith";
-import { LangChainTracer } from "langsmith/callbacks";
+import { traceable } from "langsmith/traceable";
+import { getLangchainCallbacks } from "langsmith/langchain";
 import { matchRules } from "./supabase";
 import type { Env } from "./types";
 
@@ -53,13 +54,14 @@ export async function reviewCode(diff: string, env: Env): Promise<string> {
   const chain = prompt.pipe(model).pipe(new StringOutputParser());
 
   const langsmithClient = new LangSmithClient({ apiKey: env.LANGSMITH_API_KEY });
-  const tracer = new LangChainTracer({
-    projectName: env.LANGSMITH_PROJECT,
-    client: langsmithClient,
-  });
 
-  return chain.invoke(
-    { rules: rulesText, diff: diff.slice(0, MAX_DIFF_CHARS) },
-    { callbacks: [tracer] }
+  const traced = traceable(
+    async (input: { rules: string; diff: string }) => {
+      const callbacks = await getLangchainCallbacks();
+      return chain.invoke(input, { callbacks });
+    },
+    { name: "code-review", client: langsmithClient, project_name: env.LANGSMITH_PROJECT }
   );
+
+  return traced({ rules: rulesText, diff: diff.slice(0, MAX_DIFF_CHARS) });
 }
