@@ -36,8 +36,9 @@ For each issue:
 If no issues, say so clearly and keep it short.`;
 
 export async function reviewCode(input: ReviewInput, env: Env): Promise<string> {
-  // Use patch content from all files for rule matching
+  console.log(`[reviewer] files: ${input.files.length}, patches: ${input.files.map((f) => f.patch.length)}`);
   const diffSample = input.files.map((f) => f.patch).join("\n").slice(0, 2000);
+  console.log(`[reviewer] diffSample length: ${diffSample.length}`);
   const rules = await matchRules(diffSample, env);
 
   const rulesText = rules.length

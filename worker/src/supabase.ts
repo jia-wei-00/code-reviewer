@@ -14,13 +14,24 @@ export async function matchRules(
   matchCount = 10,
   threshold = 0.5
 ): Promise<MatchedRule[]> {
+  if (!query.trim()) {
+    console.log("[matchRules] empty query — skipping rule match, using defaults");
+    return [];
+  }
+
   const embeddings = new GoogleGenerativeAIEmbeddings({
     model: "gemini-embedding-2",
     apiKey: env.GOOGLE_API_KEY,
   });
 
-  // Embed only the first 2000 chars of the diff to stay within token limits
   const [queryEmbedding] = await embeddings.embedDocuments([query.slice(0, 2000)]);
+
+  console.log(`[matchRules] embedding dims: ${queryEmbedding?.length ?? 0}`);
+
+  if (!queryEmbedding || queryEmbedding.length === 0) {
+    console.warn("[matchRules] Gemini returned empty embedding — using defaults");
+    return [];
+  }
 
   const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 
