@@ -7,13 +7,9 @@ account_id = "ae69af7599a04bcb6938b1b7f47a9fd2"
 [vars]
 LANGSMITH_PROJECT = "code-reviewer"
 
-[[durable_objects.bindings]]
-name = "Sandbox"
-class_name = "Sandbox"
-
 [[migrations]]
-tag = "v1"
-new_classes = ["Sandbox"]
+tag = "v2"
+deleted_classes = ["Sandbox"]
 
 [observability]
 enabled = false
@@ -26,7 +22,7 @@ persist = true
 invocation_logs = true
 
 [observability.traces]
-enabled = false
+enabled = true
 persist = true
 head_sampling_rate = 1
 
