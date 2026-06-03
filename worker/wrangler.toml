@@ -2,6 +2,7 @@ name = "code-reviewer-worker"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
+account_id = "ae69af7599a04bcb6938b1b7f47a9fd2"
 
 [vars]
 LANGSMITH_PROJECT = "code-reviewer"
