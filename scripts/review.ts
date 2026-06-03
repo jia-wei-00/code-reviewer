@@ -100,7 +100,22 @@ const response = await model.invoke([
   ["human", `PR Title: ${prMeta.title}\n\n\`\`\`diff\n${annotated}\n\`\`\``],
 ]);
 
-const raw = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
+// Extract only text blocks — skip thinking/reasoning blocks the model may emit
+function extractText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b): b is { type: string; text: string } =>
+        typeof b === "object" && b !== null && (b as { type: string }).type === "text"
+      )
+      .map((b) => b.text)
+      .join("\n")
+      .trim();
+  }
+  return String(content);
+}
+
+const raw = extractText(response.content);
 console.log(`Response length: ${raw.length}`);
 
 interface ReviewComment { file: string; line: number; severity: string; body: string; }
