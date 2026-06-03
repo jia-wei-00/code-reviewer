@@ -24,10 +24,10 @@ GitHub PR
 
 ## Stack
 
-| Layer | Technology |
-|---|---|
-| CI | GitHub Actions |
-| LLM | `gemma-4-31b-it` via Google AI |
+| Layer      | Technology                            |
+| ---------- | ------------------------------------- |
+| CI         | GitHub Actions                        |
+| LLM        | `gemma-4-31b-it` via Google AI        |
 | LLM client | LangChain (`@langchain/google-genai`) |
 
 ## Project structure
@@ -45,8 +45,8 @@ GitHub PR
 
 Go to **Settings → Secrets and variables → Actions → New repository secret**:
 
-| Secret | Value |
-|---|---|
+| Secret           | Value                                                               |
+| ---------------- | ------------------------------------------------------------------- |
 | `GOOGLE_API_KEY` | Your [Google AI Studio](https://aistudio.google.com/apikey) API key |
 
 > This repo must be **public** so other repositories can reference its workflow.
@@ -87,4 +87,4 @@ That's it — every PR will automatically receive an AI review.
 >
 > Overall the changes look clean. One potential bug found in the error handler and a style suggestion on naming.
 >
-> *2 inline comment(s) · Reviewed by Gemma via code-reviewer*
+> _2 inline comment(s) · Reviewed by Gemma via code-reviewer_

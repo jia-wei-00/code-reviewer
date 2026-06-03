@@ -34,7 +34,7 @@ App Router with TypeScript and Tailwind CSS v4. Path alias `@/*` → `src/*`.
 - `src/app/api/rules/[id]/route.ts` — `DELETE` a rule by id
 - `src/lib/supabase.ts` — Supabase server client (service role)
 
-When a rule is added, the API embeds it with `gemini-embedding-exp-03-07` (768 dims) and stores the vector in Supabase `rules` table.
+When a rule is added, the API embeds it with `gemini-embedding-2` (768 dims) and stores the vector in Supabase `rules` table.
 
 ### `worker/` — Cloudflare Worker (backend review engine)
 
@@ -42,20 +42,22 @@ Entry point: `worker/src/index.ts`. All secrets are Wrangler secrets (not `.env`
 
 | File | Responsibility |
 |---|---|
-| `index.ts` | Route dispatcher, webhook entrypoint |
+| `index.ts` | Webhook entry point, Sandbox orchestration, Octokit PR comments |
 | `webhook.ts` | HMAC-SHA256 GitHub signature verification |
-| `github.ts` | Fetch PR diff, post review comment |
+| `reviewer.ts` | LangChain chain: Supabase RAG + Gemma LLM + LangSmith tracing |
 | `supabase.ts` | Embed diff excerpt → pgvector similarity search → matched rules |
-| `reviewer.ts` | LangChain chain: prompt + Gemma LLM + LangSmith tracing |
-| `types.ts` | `Env` interface for all Worker secrets |
+| `types.ts` | `Env` interface (includes `Sandbox` Durable Object binding) |
 
-Review pipeline (triggered on PR `opened` / `synchronize`):
-1. Verify GitHub webhook signature
-2. Fetch PR diff via GitHub API
-3. Embed first 2000 chars of diff → similarity search → top-10 matching rules
-4. Build prompt with rules + diff (capped at 12 000 chars) → `gemma-4-31b-it`
-5. Post review as a PR comment
-6. All LangChain calls traced in LangSmith project `code-reviewer`
+Review pipeline (triggered on PR `opened` / `synchronize` / `reopened`):
+1. Verify GitHub webhook HMAC signature
+2. Post "review in progress" comment immediately via Octokit
+3. Clone PR branch into Cloudflare Sandbox (`git clone --depth=1`)
+4. Fetch up to 5 changed files — full content + diff patch via Sandbox + Octokit
+5. Embed patch → Supabase similarity search → top-10 matching rules
+6. Build prompt (rules + diff + full file content) → `gemma-4-31b-it`
+7. Post final review comment via Octokit
+8. Destroy sandbox
+9. All LangChain calls traced in LangSmith
 
 ### Next.js Version Warning
 
@@ -90,4 +92,4 @@ LANGSMITH_API_KEY
 ## Supabase Schema
 
 Run `supabase-setup.sql` once in the Supabase SQL editor before first use.
-Key objects: `rules` table, `ivfflat` index on `embedding vector(768)`, `match_rules` RPC function.
+Key objects: `rules` table, `ivfflat` index on `embedding vector(3072)`, `match_rules` RPC function.

@@ -1,67 +1,113 @@
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { ChatPromptTemplate } from "@langchain/core/prompts";
-import { StringOutputParser } from "@langchain/core/output_parsers";
-import { Client as LangSmithClient } from "langsmith";
-import { traceable } from "langsmith/traceable";
-import { getLangchainCallbacks } from "langsmith/langchain";
-import { matchRules } from "./supabase";
 import type { Env } from "./types";
 
-const SYSTEM_PROMPT = `You are an expert code reviewer. Analyze the provided pull request diff and give specific, actionable feedback.
+export interface InlineComment {
+  file: string;
+  line: number;
+  severity: "critical" | "warning" | "suggestion";
+  body: string;
+}
 
-Apply the following coding rules:
-{rules}
+export interface ReviewResult {
+  summary: string;
+  comments: InlineComment[];
+}
 
-Structure your review exactly as:
+export interface ReviewInput {
+  prTitle: string;
+  diff: string;
+}
 
-## Summary
-[2–3 sentence overall assessment of the change]
+/** Annotate a unified diff with new-file line numbers so the AI can reference them. */
+function annotateDiff(diff: string): string {
+  const lines = diff.split("\n");
+  let newLine = 0;
+  const result: string[] = [];
 
-## Issues
-For each issue use this format:
-**\`{{file}}\`** — line {{line}}
-- **Severity:** critical | warning | suggestion
-- **Issue:** [what is wrong]
-- **Fix:** [concrete recommendation]
-- **Rule:** [which rule category applies]
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      const m = line.match(/@@ -\d+(?:,\d+)? \+(\d+)/);
+      if (m) newLine = parseInt(m[1]) - 1;
+      result.push(line);
+    } else if (line.startsWith("-")) {
+      result.push(line);
+    } else if (line.startsWith("+")) {
+      newLine++;
+      result.push(`+[L${newLine}] ${line.slice(1)}`);
+    } else if (line.startsWith("\\")) {
+      result.push(line);
+    } else {
+      newLine++;
+      result.push(` [L${newLine}]${line.slice(1) ? " " + line.slice(1) : ""}`);
+    }
+  }
 
-## What looks good
-[Briefly note any positive patterns worth keeping]
+  return result.join("\n");
+}
 
-If there are no issues, say so clearly and keep it short.`;
+const SYSTEM_PROMPT = `You are an expert code reviewer. Analyze the PR diff and return ONLY a JSON object — no markdown fences, no explanation, no extra text.
 
-// Truncate diff to stay within the model's context window
-const MAX_DIFF_CHARS = 12_000;
+The diff lines are annotated with [LN] showing the new-file line number. Use these exact numbers in "line".
 
-export async function reviewCode(diff: string, env: Env): Promise<string> {
-  const rules = await matchRules(diff, env);
+JSON format:
+{
+  "summary": "2-3 sentence overall assessment",
+  "comments": [
+    {
+      "file": "exact/path/from/diff.ts",
+      "line": 42,
+      "severity": "critical|warning|suggestion",
+      "body": "Describe the issue and how to fix it."
+    }
+  ]
+}
 
-  const rulesText = rules.length
-    ? rules.map((r) => `[${r.category}] ${r.content}`).join("\n")
-    : "Apply general best practices for code quality, security, and maintainability.";
+Rules:
+- "file" must match exactly the path after "+++ b/" in the diff (no leading slash)
+- "line" must be an integer from the [LN] annotation of the specific problematic line
+- Only raise real issues — security risks, bugs, performance problems, bad practices
+- If there are no issues, return an empty "comments" array`;
 
+export async function reviewCode(input: ReviewInput, env: Env): Promise<ReviewResult> {
   const model = new ChatGoogleGenerativeAI({
     model: "gemma-4-31b-it",
     apiKey: env.GOOGLE_API_KEY,
     temperature: 0.2,
   });
 
-  const prompt = ChatPromptTemplate.fromMessages([
+  const annotated = annotateDiff(input.diff.slice(0, 12_000));
+
+  const response = await model.invoke([
     ["system", SYSTEM_PROMPT],
-    ["human", "Review this diff:\n\n```diff\n{diff}\n```"],
+    ["human", `PR Title: ${input.prTitle}\n\n\`\`\`diff\n${annotated}\n\`\`\``],
   ]);
 
-  const chain = prompt.pipe(model).pipe(new StringOutputParser());
+  const text = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
+  console.log("[reviewer] raw response length:", text.length);
 
-  const langsmithClient = new LangSmithClient({ apiKey: env.LANGSMITH_API_KEY });
+  // Extract JSON — handle responses wrapped in markdown code blocks
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    console.warn("[reviewer] no JSON found in response, returning summary only");
+    return { summary: text.slice(0, 1000), comments: [] };
+  }
 
-  const traced = traceable(
-    async (input: { rules: string; diff: string }) => {
-      const callbacks = await getLangchainCallbacks();
-      return chain.invoke(input, { callbacks });
-    },
-    { name: "code-review", client: langsmithClient, project_name: env.LANGSMITH_PROJECT }
-  );
-
-  return traced({ rules: rulesText, diff: diff.slice(0, MAX_DIFF_CHARS) });
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as Partial<ReviewResult>;
+    return {
+      summary: typeof parsed.summary === "string" ? parsed.summary : "Review complete.",
+      comments: Array.isArray(parsed.comments)
+        ? parsed.comments.filter(
+            (c) =>
+              typeof c.file === "string" &&
+              typeof c.line === "number" &&
+              c.line > 0 &&
+              typeof c.body === "string"
+          )
+        : [],
+    };
+  } catch (err) {
+    console.warn("[reviewer] JSON parse failed:", err instanceof Error ? err.message : String(err));
+    return { summary: text.slice(0, 1000), comments: [] };
+  }
 }
