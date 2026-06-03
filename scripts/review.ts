@@ -1,109 +1,70 @@
-import { GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { ChatPromptTemplate } from "@langchain/core/prompts";
-import { StringOutputParser } from "@langchain/core/output_parsers";
-import { createClient } from "@supabase/supabase-js";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 
 // ── env ────────────────────────────────────────────────────────────────────
-const required = {
-  GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
-  SUPABASE_URL: process.env.SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
-  GH_TOKEN: process.env.GH_TOKEN,
-  PR_NUMBER: process.env.PR_NUMBER,
-  REPO: process.env.REPO,
-  COMMIT_SHA: process.env.COMMIT_SHA,
-};
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+const GH_TOKEN = process.env.GH_TOKEN;
+const PR_NUMBER = process.env.PR_NUMBER;
+const REPO = process.env.REPO;
+const COMMIT_SHA = process.env.COMMIT_SHA;
 
-for (const [key, val] of Object.entries(required)) {
-  if (!val) throw new Error(`Missing required env var: ${key}`);
+if (!GOOGLE_API_KEY || !GH_TOKEN || !PR_NUMBER || !REPO || !COMMIT_SHA) {
+  throw new Error("Missing env vars: GOOGLE_API_KEY, GH_TOKEN, PR_NUMBER, REPO, COMMIT_SHA");
 }
-
-const {
-  GOOGLE_API_KEY,
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY,
-  GH_TOKEN,
-  PR_NUMBER,
-  REPO,
-  COMMIT_SHA,
-} = required as Record<keyof typeof required, string>;
 
 const [owner, repoName] = REPO.split("/");
 const prNumber = parseInt(PR_NUMBER, 10);
 
 const GH_HEADERS = {
   Authorization: `token ${GH_TOKEN}`,
+  Accept: "application/vnd.github+json",
   "User-Agent": "code-reviewer-bot/1.0",
+  "X-GitHub-Api-Version": "2022-11-28",
 };
 
-// ── step 1: fetch diff ─────────────────────────────────────────────────────
+// ── step 1: fetch PR title + diff ──────────────────────────────────────────
 console.log("::group::Fetching PR diff");
+
+const prMetaRes = await fetch(
+  `https://api.github.com/repos/${owner}/${repoName}/pulls/${prNumber}`,
+  { headers: GH_HEADERS }
+);
+if (!prMetaRes.ok) throw new Error(`PR meta fetch failed: ${prMetaRes.status}`);
+const prMeta = (await prMetaRes.json()) as { title: string };
+
 const diffRes = await fetch(
   `https://api.github.com/repos/${owner}/${repoName}/pulls/${prNumber}`,
   { headers: { ...GH_HEADERS, Accept: "application/vnd.github.v3.diff" } }
 );
-if (!diffRes.ok) throw new Error(`GitHub diff fetch failed: ${diffRes.status}`);
+if (!diffRes.ok) throw new Error(`Diff fetch failed: ${diffRes.status}`);
 const diff = await diffRes.text();
-console.log(`Diff size: ${diff.length} chars`);
+
+console.log(`PR: "${prMeta.title}"`);
+console.log(`Diff: ${diff.length} chars`);
 console.log("::endgroup::");
 
-// ── step 2: embed diff → match rules ──────────────────────────────────────
-console.log("::group::Matching rules from Supabase");
-const embeddings = new GoogleGenerativeAIEmbeddings({
-  model: "gemini-embedding-2",
-  apiKey: GOOGLE_API_KEY,
-});
-
-const [queryEmbedding] = await embeddings.embedDocuments([diff.slice(0, 2000)]);
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-const { data: rules, error: rulesError } = await supabase.rpc("match_rules", {
-  query_embedding: queryEmbedding,
-  match_threshold: 0.5,
-  match_count: 10,
-});
-if (rulesError) throw new Error(`Supabase match_rules error: ${rulesError.message}`);
-
-console.log(`Matched ${rules?.length ?? 0} rules`);
-if (rules?.length) {
-  for (const r of rules as { category: string; content: string }[]) {
-    console.log(`  [${r.category}] ${r.content.slice(0, 80)}…`);
-  }
+// ── step 2: annotate diff with new-file line numbers ───────────────────────
+function annotateDiff(raw: string): string {
+  let newLine = 0;
+  return raw
+    .split("\n")
+    .map((line) => {
+      if (line.startsWith("@@")) {
+        const m = line.match(/@@ -\d+(?:,\d+)? \+(\d+)/);
+        if (m) newLine = parseInt(m[1]) - 1;
+        return line;
+      }
+      if (line.startsWith("-") || line.startsWith("\\")) return line;
+      newLine++;
+      if (line.startsWith("+")) return `+[L${newLine}] ${line.slice(1)}`;
+      return ` [L${newLine}]${line.length > 1 ? " " + line.slice(1) : ""}`;
+    })
+    .join("\n");
 }
-console.log("::endgroup::");
 
-const rulesText =
-  rules?.length
-    ? (rules as { category: string; content: string }[])
-        .map((r) => `[${r.category}] ${r.content}`)
-        .join("\n")
-    : "Apply general best practices for code quality, security, and maintainability.";
+const annotated = annotateDiff(diff.slice(0, 14_000));
 
 // ── step 3: AI review ─────────────────────────────────────────────────────
 console.log("::group::Running AI review");
-
-const SYSTEM_PROMPT = `You are an expert code reviewer. Analyze the provided pull request diff and give specific, actionable feedback.
-
-Apply the following coding rules:
-{rules}
-
-Structure your review exactly as:
-
-## Summary
-[2–3 sentence overall assessment of the change]
-
-## Issues
-For each issue use this format:
-**\`{file}\`** — line {line}
-- **Severity:** critical | warning | suggestion
-- **Issue:** [what is wrong]
-- **Fix:** [concrete recommendation]
-- **Rule:** [which rule category applies]
-
-## What looks good
-[Briefly note any positive patterns worth keeping]
-
-If there are no issues, say so clearly and keep it short.`;
 
 const model = new ChatGoogleGenerativeAI({
   model: "gemma-4-31b-it",
@@ -111,34 +72,132 @@ const model = new ChatGoogleGenerativeAI({
   temperature: 0.2,
 });
 
-const prompt = ChatPromptTemplate.fromMessages([
-  ["system", SYSTEM_PROMPT],
-  ["human", "Review this diff:\n\n```diff\n{diff}\n```"],
+const SYSTEM = `You are an expert code reviewer. Analyze the PR diff and return ONLY a JSON object — no markdown fences, no explanation, no extra text before or after.
+
+Diff lines are annotated with [LN] showing the new-file line number. Use these exact numbers in "line".
+
+Return this exact JSON shape:
+{
+  "summary": "2-3 sentence overall assessment",
+  "comments": [
+    {
+      "file": "exact/path/from/diff.ts",
+      "line": 42,
+      "severity": "critical|warning|suggestion",
+      "body": "Describe the issue and the concrete fix."
+    }
+  ]
+}
+
+Rules:
+- "file" must match exactly the path after "+++ b/" in the diff (no leading "b/", no leading slash)
+- "line" must be the integer from the [LN] annotation on the specific problematic line
+- Only flag real issues: security vulnerabilities, bugs, performance problems, bad practices
+- If no issues found, return an empty "comments" array`;
+
+const response = await model.invoke([
+  ["system", SYSTEM],
+  ["human", `PR Title: ${prMeta.title}\n\n\`\`\`diff\n${annotated}\n\`\`\``],
 ]);
 
-const chain = prompt.pipe(model).pipe(new StringOutputParser());
+// Extract only text blocks — skip thinking/reasoning blocks the model may emit
+function extractText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b): b is { type: string; text: string } =>
+        typeof b === "object" && b !== null && (b as { type: string }).type === "text"
+      )
+      .map((b) => b.text)
+      .join("\n")
+      .trim();
+  }
+  return String(content);
+}
 
-const review = await chain.invoke({
-  rules: rulesText,
-  diff: diff.slice(0, 12_000),
-});
+const raw = extractText(response.content);
+console.log(`Response length: ${raw.length}`);
 
-console.log("Review generated successfully");
+interface ReviewComment { file: string; line: number; severity: string; body: string; }
+interface ReviewResult  { summary: string; comments: ReviewComment[]; }
+
+let result: ReviewResult = { summary: raw.slice(0, 800), comments: [] };
+const jsonMatch = raw.match(/\{[\s\S]*\}/);
+if (jsonMatch) {
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as Partial<ReviewResult>;
+    result = {
+      summary: typeof parsed.summary === "string" ? parsed.summary : raw.slice(0, 800),
+      comments: Array.isArray(parsed.comments)
+        ? parsed.comments.filter(
+            (c) => typeof c.file === "string" && typeof c.line === "number" && c.line > 0 && typeof c.body === "string"
+          )
+        : [],
+    };
+  } catch {
+    console.warn("JSON parse failed, using raw response as summary");
+  }
+}
+
+console.log(`Summary: ${result.summary.slice(0, 120)}…`);
+console.log(`Inline comments to post: ${result.comments.length}`);
 console.log("::endgroup::");
 
-// ── step 4: post review comment ────────────────────────────────────────────
-console.log("::group::Posting review to GitHub");
-const postRes = await fetch(
-  `https://api.github.com/repos/${owner}/${repoName}/pulls/${prNumber}/reviews`,
+// ── step 4: post inline review comments individually ──────────────────────
+console.log("::group::Posting inline comments");
+
+let postedCount = 0;
+for (const comment of result.comments) {
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repoName}/pulls/${prNumber}/comments`,
+    {
+      method: "POST",
+      headers: { ...GH_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        commit_id: COMMIT_SHA,
+        path: comment.file,
+        line: comment.line,
+        body: `**${comment.severity.toUpperCase()}**\n\n${comment.body}`,
+      }),
+    }
+  );
+  if (res.ok) {
+    postedCount++;
+    console.log(`  ✓ ${comment.file}:${comment.line}`);
+  } else {
+    const errText = await res.text();
+    console.warn(`  ✗ ${comment.file}:${comment.line} — ${res.status}: ${errText.slice(0, 200)}`);
+  }
+}
+
+console.log(`Posted ${postedCount}/${result.comments.length} inline comments`);
+console.log("::endgroup::");
+
+// ── step 5: post summary comment ──────────────────────────────────────────
+console.log("::group::Posting summary comment");
+
+const summaryBody = [
+  "## 🤖 Code Review",
+  "",
+  result.summary,
+  "",
+  "---",
+  `*${postedCount} inline comment(s) · Reviewed by Gemma via [code-reviewer](https://github.com/${REPO.split("/")[0]}/code-reviewer)*`,
+].join("\n");
+
+const summaryRes = await fetch(
+  `https://api.github.com/repos/${owner}/${repoName}/issues/${prNumber}/comments`,
   {
     method: "POST",
-    headers: { ...GH_HEADERS, Accept: "application/vnd.github.v3+json", "Content-Type": "application/json" },
-    body: JSON.stringify({ commit_id: COMMIT_SHA, body: review, event: "COMMENT" }),
+    headers: { ...GH_HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify({ body: summaryBody }),
   }
 );
-if (!postRes.ok) {
-  const text = await postRes.text();
-  throw new Error(`GitHub review post failed: ${postRes.status} — ${text}`);
+
+if (!summaryRes.ok) {
+  const t = await summaryRes.text();
+  throw new Error(`Summary post failed: ${summaryRes.status} — ${t}`);
 }
-console.log("Review posted successfully");
+
+console.log("Summary posted");
 console.log("::endgroup::");

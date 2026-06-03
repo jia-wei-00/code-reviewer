@@ -1,11 +1,7 @@
-import { getSandbox, proxyToSandbox } from "@cloudflare/sandbox";
 import { Octokit } from "@octokit/rest";
 import { verifyGitHubSignature } from "./webhook";
 import { reviewCode } from "./reviewer";
 import type { Env } from "./types";
-
-export { Sandbox } from "@cloudflare/sandbox";
-export type { Env };
 
 function strField(obj: Record<string, unknown>, key: string): string | undefined {
   const v = obj[key];
@@ -24,9 +20,6 @@ function objField(obj: Record<string, unknown>, key: string): Record<string, unk
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const proxyResponse = await proxyToSandbox(request, env);
-    if (proxyResponse) return proxyResponse;
-
     const url = new URL(request.url);
     if (url.pathname !== "/webhook" || request.method !== "POST") {
       return new Response("Code Review Bot — configure GitHub webhook to POST /webhook");
@@ -67,7 +60,6 @@ export default {
 };
 
 async function reviewPullRequest(payload: Record<string, unknown>, env: Env): Promise<void> {
-  // ── extract & validate payload fields ──────────────────────────────────
   const pr = objField(payload, "pull_request");
   const repo = objField(payload, "repository");
 
@@ -81,67 +73,94 @@ async function reviewPullRequest(payload: Record<string, unknown>, env: Env): Pr
   const repoOwner = objField(repo, "owner");
 
   if (!head || !base || !repoOwner) {
-    console.error("[review] missing head/base/owner in payload");
+    console.error("[review] missing head/base/owner");
     return;
   }
 
   const prNumber = numField(pr, "number");
   const prTitle = strField(pr, "title") ?? "Untitled PR";
-  const headRef = strField(head, "ref");
   const headSha = strField(head, "sha");
-  const baseSha = strField(base, "sha");
   const owner = strField(repoOwner, "login");
   const repoName = strField(repo, "name");
 
-  if (!prNumber || !headRef || !headSha || !baseSha || !owner || !repoName) {
-    console.error("[review] incomplete payload fields", { prNumber, headRef, headSha, baseSha, owner, repoName });
+  if (!prNumber || !headSha || !owner || !repoName) {
+    console.error("[review] incomplete payload fields", { prNumber, headSha, owner, repoName });
     return;
   }
 
-  console.log(`[review] PR #${prNumber} — ${owner}/${repoName} branch=${headRef}`);
+  console.log(`[review] PR #${prNumber} — ${owner}/${repoName}`);
 
   const octokit = new Octokit({ auth: env.GITHUB_TOKEN });
-  const sandbox = getSandbox(env.Sandbox, `review-${prNumber}`);
 
+  // Step 1: post "in progress" comment and save its ID so we can delete it later
+  let progressCommentId: number | undefined;
   try {
-    console.log("[review] posting in-progress comment");
-    await octokit.issues.createComment({
+    const progressComment = await octokit.issues.createComment({
       owner,
       repo: repoName,
       issue_number: prNumber,
       body: "🔍 Code review in progress…",
     });
+    progressCommentId = progressComment.data.id;
+    console.log("[review] posted in-progress comment", progressCommentId);
+  } catch (err) {
+    console.warn("[review] could not post in-progress comment:", err instanceof Error ? err.message : String(err));
+  }
 
-    console.log("[review] cloning repository into sandbox");
-    const cloneUrl = `https://${env.GITHUB_TOKEN}@github.com/${owner}/${repoName}.git`;
-    await sandbox.exec(`git clone --depth=1 --branch=${headRef} ${cloneUrl} /workspace/repo`);
+  try {
+    // Step 2: fetch the PR diff from GitHub
+    console.log("[review] fetching PR diff");
+    const diffRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repoName}/pulls/${prNumber}`,
+      {
+        headers: {
+          Authorization: `token ${env.GITHUB_TOKEN}`,
+          Accept: "application/vnd.github.v3.diff",
+          "User-Agent": "code-reviewer-bot/1.0",
+        },
+      }
+    );
+    if (!diffRes.ok) throw new Error(`GitHub diff fetch failed: ${diffRes.status}`);
+    const diff = await diffRes.text();
+    console.log(`[review] diff size: ${diff.length} chars`);
 
-    console.log("[review] fetching changed files");
-    const comparison = await octokit.repos.compareCommits({
-      owner,
-      repo: repoName,
-      base: baseSha,
-      head: headSha,
-    });
+    // Step 3: AI review → structured result
+    console.log("[review] running AI review");
+    const result = await reviewCode({ prTitle, diff }, env);
+    console.log(`[review] got ${result.comments.length} inline comment(s)`);
 
-    const files: { path: string; patch: string; content: string }[] = [];
-    for (const file of (comparison.data.files ?? []).slice(0, 5)) {
-      if (file.status === "removed") continue;
-      console.log(`[review] reading file: ${file.filename}`);
-      const result = await sandbox.readFile(`/workspace/repo/${file.filename}`);
-      files.push({ path: file.filename, patch: file.patch ?? "", content: result.content });
+    // Step 4: post inline review comments (one attempt each; skip bad line refs)
+    for (const comment of result.comments) {
+      try {
+        await octokit.pulls.createReviewComment({
+          owner,
+          repo: repoName,
+          pull_number: prNumber,
+          commit_id: headSha,
+          path: comment.file,
+          line: comment.line,
+          body: `**${comment.severity.toUpperCase()}** — ${comment.body}`,
+        });
+        console.log(`[review] posted comment on ${comment.file}:${comment.line}`);
+      } catch (err) {
+        console.warn(`[review] inline comment failed (${comment.file}:${comment.line}):`, err instanceof Error ? err.message : String(err));
+      }
     }
 
-    console.log(`[review] running AI review on ${files.length} file(s)`);
-    const review = await reviewCode({ prTitle, files }, env);
-
-    console.log("[review] posting review comment");
+    // Step 5: post overall summary as a PR comment
     await octokit.issues.createComment({
       owner,
       repo: repoName,
       issue_number: prNumber,
-      body: `## Code Review\n\n${review}\n\n---\n*Reviewed by Gemma · [code-reviewer](https://github.com/${owner}/code-reviewer)*`,
+      body: `## 🤖 Code Review Summary\n\n${result.summary}\n\n---\n*Reviewed by Gemma via [code-reviewer](https://github.com/${owner}/code-reviewer)*`,
     });
+    console.log("[review] posted summary comment");
+
+    // Step 6: delete the "in progress" comment
+    if (progressCommentId) {
+      await octokit.issues.deleteComment({ owner, repo: repoName, comment_id: progressCommentId });
+      console.log("[review] deleted in-progress comment");
+    }
 
     console.log("[review] done");
   } catch (error) {
@@ -152,8 +171,6 @@ async function reviewPullRequest(payload: Record<string, unknown>, env: Env): Pr
       repo: repoName,
       issue_number: prNumber,
       body: `❌ Review failed: ${msg}`,
-    });
-  } finally {
-    await sandbox.destroy();
+    }).catch(() => {});
   }
 }
