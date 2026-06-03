@@ -50,7 +50,7 @@ console.log("::endgroup::");
 // ── step 2: embed diff → match rules ──────────────────────────────────────
 console.log("::group::Matching rules from Supabase");
 const embeddings = new GoogleGenerativeAIEmbeddings({
-  model: "gemini-embedding-exp-03-07",
+  model: "gemini-embedding-2",
   apiKey: GOOGLE_API_KEY,
 });
 

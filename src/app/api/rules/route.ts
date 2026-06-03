@@ -3,7 +3,7 @@ import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
 import { supabaseAdmin } from "@/lib/supabase";
 
 const embeddings = new GoogleGenerativeAIEmbeddings({
-  model: "gemini-embedding-exp-03-07",
+  model: "gemini-embedding-2",
   apiKey: process.env.GOOGLE_API_KEY!,
 });
 

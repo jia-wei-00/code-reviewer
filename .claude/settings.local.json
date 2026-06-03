@@ -4,7 +4,15 @@
       "PowerShell(Get-ChildItem C:\\\\vscode\\\\code-reviewer -Exclude node_modules | ForEach-Object { $_.Name })",
       "PowerShell(Get-ChildItem C:\\\\vscode\\\\code-reviewer\\\\src -Recurse | ForEach-Object { $_.FullName.Replace\\('C:\\\\vscode\\\\code-reviewer\\\\', ''\\) })",
       "PowerShell(New-Item *)",
-      "WebFetch(domain:developers.cloudflare.com)"
+      "WebFetch(domain:developers.cloudflare.com)",
+      "mcp__supabase__list_extensions",
+      "mcp__supabase__list_tables",
+      "mcp__supabase__execute_sql",
+      "mcp__github__pull_request_read"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "supabase"
+  ]
 }
