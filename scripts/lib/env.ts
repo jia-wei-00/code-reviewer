@@ -32,10 +32,16 @@ export type ReviewEnv = z.infer<typeof reviewEnvSchema>;
 export type SeedEnv = z.infer<typeof seedEnvSchema>;
 
 function normalize(raw: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return {
+  const merged: NodeJS.ProcessEnv = {
     ...raw,
     SUPABASE_URL: raw.SUPABASE_URL ?? raw.NEXT_PUBLIC_SUPABASE_URL,
   };
+  // GitHub Actions forwards unset secrets as "" rather than undefined, which
+  // would fail .optional() checks. Strip blanks so optional fields stay absent.
+  for (const key of Object.keys(merged)) {
+    if (merged[key] === "") delete merged[key];
+  }
+  return merged;
 }
 
 export function loadReviewEnv(raw: NodeJS.ProcessEnv = process.env): ReviewEnv {
