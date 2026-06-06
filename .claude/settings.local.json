@@ -8,7 +8,10 @@
       "mcp__supabase__list_extensions",
       "mcp__supabase__list_tables",
       "mcp__supabase__execute_sql",
-      "mcp__github__pull_request_read"
+      "mcp__github__pull_request_read",
+      "Bash(gh run *)",
+      "Bash(gh api *)",
+      "mcp__github__get_file_contents"
     ]
   },
   "enableAllProjectMcpServers": true,

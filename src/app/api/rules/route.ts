@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
-import { supabaseAdmin } from "@/lib/supabase";
+import { z } from "zod";
+import { getEmbeddings } from "@/lib/embeddings";
+import { getSupabaseAdmin } from "@/lib/supabase";
+import { RULE_CATEGORIES } from "@/lib/rule-categories";
 
-const embeddings = new GoogleGenerativeAIEmbeddings({
-  model: "gemini-embedding-2",
-  apiKey: process.env.GOOGLE_API_KEY!,
+const createRuleSchema = z.object({
+  content: z.string().trim().min(1, "content is required"),
+  category: z.enum(RULE_CATEGORIES),
 });
 
 export async function GET() {
-  const { data, error } = await supabaseAdmin
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
     .from("rules")
     .select("id, content, category, created_at")
     .order("category")
@@ -19,17 +22,25 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const { content, category } = await req.json();
-
-  if (!content?.trim() || !category) {
-    return NextResponse.json({ error: "content and category are required" }, { status: 400 });
+  const body: unknown = await req.json().catch(() => null);
+  const parsed = createRuleSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues.map((i) => i.message).join("; ") },
+      { status: 400 },
+    );
   }
 
-  const [embedding] = await embeddings.embedDocuments([content]);
+  const [embedding] = await getEmbeddings().embedDocuments([parsed.data.content]);
 
-  const { data, error } = await supabaseAdmin
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
     .from("rules")
-    .insert({ content: content.trim(), category, embedding })
+    .insert({
+      content: parsed.data.content,
+      category: parsed.data.category,
+      embedding,
+    })
     .select("id, content, category, created_at")
     .single();
 

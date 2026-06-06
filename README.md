@@ -1,6 +1,9 @@
 # Code Reviewer
 
-An AI-powered GitHub code review bot. When a pull request is opened or updated, it fetches the diff, sends it to Gemma for analysis, and posts inline comments on specific lines of code along with an overall summary.
+An AI-powered GitHub code review bot. When a pull request is opened or updated,
+a LangGraph workflow fetches the diff, retrieves the most relevant review rules
+from Supabase (pgvector RAG), asks Gemma to analyse the change, and posts inline
+comments plus an overall summary on the PR.
 
 ## How it works
 
@@ -8,54 +11,83 @@ An AI-powered GitHub code review bot. When a pull request is opened or updated, 
 PR opened / updated
       │
       ▼
-GitHub Actions  (code-review.yml)
-      │  fetch PR diff from GitHub API
-      │  annotate diff with line numbers
+GitHub Actions  (.github/workflows/code-review.yml)
       │
       ▼
-Gemma (gemma-4-31b-it via Google AI)
-      │  analyze diff → structured JSON review
+LangGraph state graph
+  ├─ fetchPullRequest   (Octokit: PR meta + unified diff)
+  ├─ annotateDiff       (tag changed lines with [LN] markers)
+  ├─ retrieveRules      (Gemini embeddings → Supabase match_rules RPC)
+  ├─ generateReview     (LangChain → gemma-4-31b-it via Google AI)
+  ├─ postInlineComments (Octokit: one review comment per finding)
+  └─ postSummary        (Octokit: overall assessment as PR comment)
       │
       ▼
-GitHub PR
-      │  inline comment on each flagged line
-      │  summary comment with overall assessment
+LangSmith trace (every step captured if LANGSMITH_API_KEY is set)
 ```
 
 ## Stack
 
-| Layer      | Technology                            |
-| ---------- | ------------------------------------- |
-| CI         | GitHub Actions                        |
-| LLM        | `gemma-4-31b-it` via Google AI        |
-| LLM client | LangChain (`@langchain/google-genai`) |
+| Layer       | Technology                                          |
+| ----------- | --------------------------------------------------- |
+| CI          | GitHub Actions                                      |
+| Workflow    | LangGraph (`@langchain/langgraph`)                  |
+| LLM         | `gemma-4-31b-it` via Google AI                      |
+| LLM client  | LangChain (`@langchain/google-genai`)               |
+| Embeddings  | `gemini-embedding-2`                                |
+| Vector RAG  | Supabase + pgvector                                 |
+| Tracing     | LangSmith                                           |
+| Validation  | Zod                                                 |
+| Rules UI    | Next.js 16 (App Router) + Tailwind v4               |
 
 ## Project structure
 
 ```
 ├── scripts/
-│   └── review.ts                 # Core review script
-└── .github/workflows/
-    └── code-review.yml           # Reusable AI review workflow
+│   ├── review.ts           # entry — runs the LangGraph workflow
+│   ├── seed-rules.ts       # seed default rules into Supabase
+│   └── lib/                # env, github, supabase, llm, diff, graph
+├── src/                    # Next.js rules manager UI
+│   ├── app/                # routes (App Router)
+│   └── lib/                # supabase/embeddings/rule-categories helpers
+├── .github/workflows/
+│   └── code-review.yml     # reusable AI review workflow
+├── supabase-setup.sql      # one-time pgvector + match_rules setup
+└── .env.example            # template for local env vars
 ```
 
-## Setup
+## Local setup
 
-### Add secret to this repo
+```bash
+cp .env.example .env.local   # then fill in your keys
+bun install
+bun run dev                  # rules manager UI on http://localhost:3000
+bun run seed:rules           # one-time: seed default rules into Supabase
+```
 
-Go to **Settings → Secrets and variables → Actions → New repository secret**:
+Run the review script locally against a real PR:
 
-| Secret           | Value                                                               |
-| ---------------- | ------------------------------------------------------------------- |
-| `GOOGLE_API_KEY` | Your [Google AI Studio](https://aistudio.google.com/apikey) API key |
+```bash
+GH_TOKEN=ghp_… PR_NUMBER=42 REPO=owner/name COMMIT_SHA=abc123… bun run review
+```
 
-> This repo must be **public** so other repositories can reference its workflow.
+## GitHub Actions setup
+
+Add these secrets in **Settings → Secrets and variables → Actions**:
+
+| Secret                      | Required | Purpose                                  |
+| --------------------------- | -------- | ---------------------------------------- |
+| `GOOGLE_API_KEY`            | yes      | Google AI Studio key for Gemma + Gemini  |
+| `SUPABASE_URL`              | no       | enables RAG rule retrieval               |
+| `SUPABASE_SERVICE_ROLE_KEY` | no       | enables RAG rule retrieval               |
+| `LANGSMITH_API_KEY`         | no       | enables LangSmith tracing                |
+
+> This repo must be **public** for other repositories to reference its workflow.
 
 ## Using in another repository
 
-Create `.github/workflows/code-review.yml` in the other repo:
-
 ```yaml
+# .github/workflows/code-review.yml
 name: AI Code Review
 
 on:
@@ -66,25 +98,14 @@ jobs:
   review:
     uses: jia-wei-00/code-reviewer/.github/workflows/code-review.yml@main
     secrets:
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GOOGLE_API_KEY:            ${{ secrets.GOOGLE_API_KEY }}
+      SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      LANGSMITH_API_KEY:         ${{ secrets.LANGSMITH_API_KEY }}
 ```
 
-Then add `GOOGLE_API_KEY` as a secret in that repo's **Settings → Secrets and variables → Actions**.
+## Supabase schema
 
-That's it — every PR will automatically receive an AI review.
-
-## What the bot posts
-
-**Inline comments** on specific lines flagged by the model:
-
-> **WARNING**
->
-> This function mutates its argument directly. Return a new value instead to avoid side effects.
-
-**Summary comment** at the end:
-
-> ## 🤖 Code Review
->
-> Overall the changes look clean. One potential bug found in the error handler and a style suggestion on naming.
->
-> _2 inline comment(s) · Reviewed by Gemma via code-reviewer_
+Run [`supabase-setup.sql`](./supabase-setup.sql) once in the Supabase SQL editor.
+It creates the `rules` table (with a `vector(3072)` embedding column) and the
+`match_rules` RPC the workflow calls.

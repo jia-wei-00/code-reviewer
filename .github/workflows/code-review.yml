@@ -7,6 +7,12 @@ on:
     secrets:
       GOOGLE_API_KEY:
         required: true
+      SUPABASE_URL:
+        required: false
+      SUPABASE_SERVICE_ROLE_KEY:
+        required: false
+      LANGSMITH_API_KEY:
+        required: false
 
 jobs:
   review:
@@ -27,12 +33,16 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Run AI review
-        run: bun scripts/review.ts
+        run: bun run review
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_PROJECT: code-reviewer
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}

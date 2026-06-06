@@ -4,92 +4,84 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-**Next.js (root)**
 ```bash
-bun dev          # start dev server on http://localhost:3000
-bun build        # production build
-bun start        # start production server
-bun lint         # run ESLint
-```
-
-**Cloudflare Worker (`worker/`)**
-```bash
-cd worker
-bun run dev      # local dev via wrangler dev
-bun run deploy   # deploy to Cloudflare
+bun dev              # Next.js dev server on http://localhost:3000
+bun build            # Next.js production build
+bun start            # Next.js production server
+bun lint             # ESLint
+bun run review       # run the LangGraph review script (needs env vars)
+bun run seed:rules   # seed default rules into Supabase
 ```
 
 > Use **bun** as the package manager (`bun add <pkg>`).
 
 ## Architecture
 
-Two separate projects in the same repo:
+This is a **GitHub-Action-only** code review bot. The repo contains:
 
-### `/` — Next.js 16 (frontend only)
+1. A Next.js app (`src/`) — a small UI to manage review rules stored in Supabase.
+2. A LangGraph workflow (`scripts/`) — invoked by a reusable GitHub Actions
+   workflow (`.github/workflows/code-review.yml`) on every PR.
 
-App Router with TypeScript and Tailwind CSS v4. Path alias `@/*` → `src/*`.
+There is no Cloudflare Worker or other server component.
 
-- `src/app/page.tsx` — Rules manager UI (client component, add/list/delete rules)
-- `src/app/api/rules/route.ts` — `GET` list rules, `POST` embed + upsert to Supabase
-- `src/app/api/rules/[id]/route.ts` — `DELETE` a rule by id
-- `src/lib/supabase.ts` — Supabase server client (service role)
+### Review pipeline (`scripts/`)
 
-When a rule is added, the API embeds it with `gemini-embedding-2` (768 dims) and stores the vector in Supabase `rules` table.
+`scripts/review.ts` is the entry point. It loads env via Zod, then runs a
+compiled LangGraph state graph (`scripts/lib/graph.ts`) with these nodes:
 
-### `worker/` — Cloudflare Worker (backend review engine)
+| Node                  | File                          | Responsibility                                       |
+| --------------------- | ----------------------------- | ---------------------------------------------------- |
+| `fetchPullRequest`    | `scripts/lib/github.ts`       | Octokit: PR meta + unified diff                      |
+| `annotateDiff`        | `scripts/lib/diff.ts`         | Tag changed lines with `[LN]` markers                |
+| `retrieveRules`       | `scripts/lib/supabase.ts`     | Gemini embed → `match_rules` RPC (pgvector RAG)      |
+| `generateReview`      | `scripts/lib/llm.ts`          | LangChain prompt → Gemma → JSON parsed via Zod       |
+| `postInlineComments`  | `scripts/lib/github.ts`       | One review comment per finding                       |
+| `postSummary`         | `scripts/lib/github.ts`       | Overall assessment as PR issue comment               |
 
-Entry point: `worker/src/index.ts`. All secrets are Wrangler secrets (not `.env`).
+LangSmith tracing is auto-configured when `LANGSMITH_API_KEY` is present
+(`scripts/lib/env.ts` sets `LANGCHAIN_TRACING_V2` / `LANGSMITH_*` env vars).
+Supabase is optional — when its env vars are absent the workflow runs without
+RAG and the LLM falls back to general best practices.
 
-| File | Responsibility |
-|---|---|
-| `index.ts` | Webhook entry point, Sandbox orchestration, Octokit PR comments |
-| `webhook.ts` | HMAC-SHA256 GitHub signature verification |
-| `reviewer.ts` | LangChain chain: Supabase RAG + Gemma LLM + LangSmith tracing |
-| `supabase.ts` | Embed diff excerpt → pgvector similarity search → matched rules |
-| `types.ts` | `Env` interface (includes `Sandbox` Durable Object binding) |
+### Next.js rules manager (`src/`)
 
-Review pipeline (triggered on PR `opened` / `synchronize` / `reopened`):
-1. Verify GitHub webhook HMAC signature
-2. Post "review in progress" comment immediately via Octokit
-3. Clone PR branch into Cloudflare Sandbox (`git clone --depth=1`)
-4. Fetch up to 5 changed files — full content + diff patch via Sandbox + Octokit
-5. Embed patch → Supabase similarity search → top-10 matching rules
-6. Build prompt (rules + diff + full file content) → `gemma-4-31b-it`
-7. Post final review comment via Octokit
-8. Destroy sandbox
-9. All LangChain calls traced in LangSmith
+App Router with TypeScript and Tailwind v4. Path alias `@/*` → `src/*`.
 
-### Next.js Version Warning
+- `src/app/page.tsx` — list / add / delete review rules (client component)
+- `src/app/api/rules/route.ts` — `GET` list, `POST` embed + insert
+- `src/app/api/rules/[id]/route.ts` — `DELETE` a rule
+- `src/lib/supabase.ts` — lazy service-role Supabase client
+- `src/lib/embeddings.ts` — lazy Gemini embeddings client
+- `src/lib/rule-categories.ts` — shared `RULE_CATEGORIES` constant + guard
 
-Next.js 16 has breaking changes. Read `node_modules/next/dist/docs/` before writing Next.js-specific code. Route Handler `params` is a `Promise` — always `await params`.
+### Next.js 16 notes
+
+Next.js 16 has breaking changes. Read `node_modules/next/dist/docs/` before
+writing Next.js-specific code. Route Handler `params` is a `Promise` —
+always `await params`.
 
 ### Styling
 
-Tailwind CSS v4 — no `tailwind.config.*`. Configuration lives in `src/app/globals.css`.
+Tailwind CSS v4 — no `tailwind.config.*`. Configuration lives in
+`src/app/globals.css`.
 
-## Environment Variables
+## Environment variables
 
-**`.env.local`** (Next.js):
-```
-NEXT_PUBLIC_SUPABASE_URL
-NEXT_PUBLIC_SUPABASE_ANON_KEY
-SUPABASE_SERVICE_ROLE_KEY
-GOOGLE_API_KEY
-```
+See `.env.example` for the full list. Required minimum to run reviews:
+`GOOGLE_API_KEY`, `GH_TOKEN`, `PR_NUMBER`, `REPO`, `COMMIT_SHA`.
+Supabase + LangSmith vars are optional but recommended.
 
-**Wrangler secrets** (Worker — set with `wrangler secret put <NAME>`):
-```
-GOOGLE_API_KEY
-SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
-GITHUB_TOKEN
-GITHUB_WEBHOOK_SECRET
-LANGSMITH_API_KEY
-```
+## Supabase schema
 
-`LANGSMITH_PROJECT` is a plain `[vars]` entry in `wrangler.toml` (not secret).
+Run `supabase-setup.sql` once in the Supabase SQL editor. Key objects:
+`rules` table, `embedding vector(3072)` column, `match_rules` RPC.
 
-## Supabase Schema
+## Conventions
 
-Run `supabase-setup.sql` once in the Supabase SQL editor before first use.
-Key objects: `rules` table, `ivfflat` index on `embedding vector(3072)`, `match_rules` RPC function.
+- No hard `as T` casts where a Zod schema or type guard works.
+- No `any`; prefer `unknown` plus narrowing.
+- Env access goes through `scripts/lib/env.ts` (Zod-validated).
+- Errors surface with context (`error instanceof Error ? error.message : …`).
+- LangChain runnables / LangGraph nodes are named (`withConfig({ runName })`)
+  so LangSmith traces are readable.

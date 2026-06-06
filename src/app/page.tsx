@@ -1,40 +1,33 @@
 "use client";
 
 import { useEffect, useState } from "react";
-
-const CATEGORIES = [
-  "security",
-  "performance",
-  "style",
-  "best-practices",
-  "architecture",
-  "testing",
-] as const;
-
-type Category = (typeof CATEGORIES)[number];
+import {
+  RULE_CATEGORIES,
+  isRuleCategory,
+  type RuleCategory,
+} from "@/lib/rule-categories";
 
 type Rule = {
   id: string;
   content: string;
-  category: Category;
+  category: RuleCategory;
   created_at: string;
 };
 
 export default function Home() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [content, setContent] = useState("");
-  const [category, setCategory] = useState<Category>("best-practices");
+  const [category, setCategory] = useState<RuleCategory>("best-practices");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    async function loadRules() {
+      const res = await fetch("/api/rules");
+      if (res.ok) setRules((await res.json()) as Rule[]);
+    }
     loadRules();
   }, []);
-
-  async function loadRules() {
-    const res = await fetch("/api/rules");
-    if (res.ok) setRules(await res.json());
-  }
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -47,10 +40,14 @@ export default function Home() {
         body: JSON.stringify({ content, category }),
       });
       if (!res.ok) {
-        const body = await res.json();
-        throw new Error(body.error ?? "Failed to add rule");
+        const errorBody: unknown = await res.json().catch(() => null);
+        const message =
+          errorBody && typeof errorBody === "object" && "error" in errorBody
+            ? String((errorBody as { error: unknown }).error)
+            : "Failed to add rule";
+        throw new Error(message);
       }
-      const newRule: Rule = await res.json();
+      const newRule = (await res.json()) as Rule;
       setRules((prev) => [newRule, ...prev]);
       setContent("");
     } catch (err) {
@@ -65,13 +62,9 @@ export default function Home() {
     if (res.ok) setRules((prev) => prev.filter((r) => r.id !== id));
   }
 
-  const grouped = CATEGORIES.reduce(
-    (acc, cat) => {
-      acc[cat] = rules.filter((r) => r.category === cat);
-      return acc;
-    },
-    {} as Record<Category, Rule[]>
-  );
+  const grouped: Record<RuleCategory, Rule[]> = Object.fromEntries(
+    RULE_CATEGORIES.map((cat) => [cat, rules.filter((r) => r.category === cat)]),
+  ) as Record<RuleCategory, Rule[]>;
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 py-12 px-4">
@@ -104,10 +97,12 @@ export default function Home() {
           <div className="flex items-center gap-3">
             <select
               value={category}
-              onChange={(e) => setCategory(e.target.value as Category)}
+              onChange={(e) => {
+                if (isRuleCategory(e.target.value)) setCategory(e.target.value);
+              }}
               className="text-sm bg-transparent border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400 dark:focus:ring-zinc-500"
             >
-              {CATEGORIES.map((c) => (
+              {RULE_CATEGORIES.map((c) => (
                 <option key={c} value={c}>
                   {c}
                 </option>
@@ -125,7 +120,7 @@ export default function Home() {
         </form>
 
         <div className="space-y-8">
-          {CATEGORIES.map((cat) => {
+          {RULE_CATEGORIES.map((cat) => {
             const catRules = grouped[cat];
             if (!catRules.length) return null;
             return (

@@ -1,18 +1,21 @@
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
 import { createClient } from "@supabase/supabase-js";
+import { loadSeedEnv } from "./lib/env";
+import { info, warn } from "./lib/logger";
 
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-if (!GOOGLE_API_KEY || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  throw new Error(
-    "Missing env vars. Ensure .env.local is present with GOOGLE_API_KEY, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY",
-  );
+interface SeedRule {
+  category:
+    | "security"
+    | "performance"
+    | "style"
+    | "best-practices"
+    | "architecture"
+    | "testing";
+  content: string;
 }
 
-const DEFAULT_RULES: { category: string; content: string }[] = [
-  // ── security ──────────────────────────────────────────────────────────────
+const DEFAULT_RULES: SeedRule[] = [
+  // ── security ────────────────────────────────────────────────────────────────
   {
     category: "security",
     content:
@@ -54,7 +57,7 @@ const DEFAULT_RULES: { category: string; content: string }[] = [
       "Sanitize any content rendered to HTML to prevent XSS. Use framework escaping mechanisms rather than raw innerHTML.",
   },
 
-  // ── performance ──────────────────────────────────────────────────────────
+  // ── performance ─────────────────────────────────────────────────────────────
   {
     category: "performance",
     content:
@@ -87,11 +90,10 @@ const DEFAULT_RULES: { category: string; content: string }[] = [
   },
   {
     category: "performance",
-    content:
-      "Prefer streaming responses over buffering entire large payloads in memory.",
+    content: "Prefer streaming responses over buffering entire large payloads in memory.",
   },
 
-  // ── style ────────────────────────────────────────────────────────────────
+  // ── style ───────────────────────────────────────────────────────────────────
   {
     category: "style",
     content:
@@ -128,7 +130,7 @@ const DEFAULT_RULES: { category: string; content: string }[] = [
       "Maintain consistent formatting enforced by the project linter/formatter. Do not mix styles within a file.",
   },
 
-  // ── best-practices ────────────────────────────────────────────────────────
+  // ── best-practices ──────────────────────────────────────────────────────────
   {
     category: "best-practices",
     content:
@@ -166,11 +168,10 @@ const DEFAULT_RULES: { category: string; content: string }[] = [
   },
   {
     category: "best-practices",
-    content:
-      "Use const by default, let only when reassignment is needed, and never use var.",
+    content: "Use const by default, let only when reassignment is needed, and never use var.",
   },
 
-  // ── architecture ─────────────────────────────────────────────────────────
+  // ── architecture ────────────────────────────────────────────────────────────
   {
     category: "architecture",
     content:
@@ -207,7 +208,7 @@ const DEFAULT_RULES: { category: string; content: string }[] = [
       "Keep API responses consistent in shape. Use a standard envelope (data, error, metadata) across all endpoints.",
   },
 
-  // ── testing ──────────────────────────────────────────────────────────────
+  // ── testing ─────────────────────────────────────────────────────────────────
   {
     category: "testing",
     content:
@@ -245,44 +246,57 @@ const DEFAULT_RULES: { category: string; content: string }[] = [
   },
 ];
 
-const embeddings = new GoogleGenerativeAIEmbeddings({
-  model: "gemini-embedding-2",
-  apiKey: GOOGLE_API_KEY,
-});
+async function main(): Promise<void> {
+  const env = loadSeedEnv();
+  const embeddings = new GoogleGenerativeAIEmbeddings({
+    model: env.EMBEDDING_MODEL,
+    apiKey: env.GOOGLE_API_KEY,
+  });
+  const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  info(`Seeding ${DEFAULT_RULES.length} rules…\n`);
 
-console.log(`Seeding ${DEFAULT_RULES.length} rules…\n`);
+  let inserted = 0;
+  let skipped = 0;
 
-let inserted = 0;
-let skipped = 0;
+  for (const rule of DEFAULT_RULES) {
+    const { data: existing, error: lookupError } = await supabase
+      .from("rules")
+      .select("id")
+      .eq("content", rule.content)
+      .maybeSingle();
 
-for (const rule of DEFAULT_RULES) {
-  // Skip if identical content already exists
-  const { data: existing } = await supabase
-    .from("rules")
-    .select("id")
-    .eq("content", rule.content)
-    .maybeSingle();
+    if (lookupError) {
+      warn(`Lookup failed [${rule.category}]: ${lookupError.message}`);
+      continue;
+    }
 
-  if (existing) {
-    console.log(`  skip [${rule.category}] ${rule.content.slice(0, 60)}…`);
-    skipped++;
-    continue;
-  }
+    if (existing) {
+      info(`  skip [${rule.category}] ${rule.content.slice(0, 60)}…`);
+      skipped++;
+      continue;
+    }
 
-  const [embedding] = await embeddings.embedDocuments([rule.content]);
+    const [embedding] = await embeddings.embedDocuments([rule.content]);
+    const { error: insertError } = await supabase
+      .from("rules")
+      .insert({ content: rule.content, category: rule.category, embedding });
 
-  const { error } = await supabase
-    .from("rules")
-    .insert({ content: rule.content, category: rule.category, embedding });
-
-  if (error) {
-    console.error(`  ERROR [${rule.category}]: ${error.message}`);
-  } else {
-    console.log(`  ✓ [${rule.category}] ${rule.content.slice(0, 60)}…`);
+    if (insertError) {
+      warn(`Insert failed [${rule.category}]: ${insertError.message}`);
+      continue;
+    }
+    info(`  ✓ [${rule.category}] ${rule.content.slice(0, 60)}…`);
     inserted++;
   }
+
+  info(`\nDone — ${inserted} inserted, ${skipped} already existed.`);
 }
 
-console.log(`\nDone — ${inserted} inserted, ${skipped} already existed.`);
+main().catch((err: unknown) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(`Seeding failed: ${msg}`);
+  process.exit(1);
+});
