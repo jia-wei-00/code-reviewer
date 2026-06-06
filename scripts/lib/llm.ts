@@ -1,7 +1,10 @@
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { ChatPromptTemplate } from "@langchain/core/prompts";
+import {
+  ChatPromptTemplate,
+  HumanMessagePromptTemplate,
+} from "@langchain/core/prompts";
 import { RunnableLambda, type Runnable } from "@langchain/core/runnables";
-import type { AIMessageChunk } from "@langchain/core/messages";
+import { SystemMessage, type AIMessageChunk } from "@langchain/core/messages";
 import type { MatchedRule } from "./supabase";
 import { reviewResultSchema, type ReviewResult } from "./review-schema";
 
@@ -59,9 +62,12 @@ export function buildReviewChain(
     temperature: options.temperature ?? 0.2,
   });
 
+  // The static system prompt contains a literal JSON example with `{` / `}`,
+  // so we pass it as a plain SystemMessage to skip f-string parsing. Only the
+  // human turn needs templating ({prTitle}, {rules}, {diff}).
   const prompt = ChatPromptTemplate.fromMessages([
-    ["system", SYSTEM_PROMPT],
-    ["human", HUMAN_PROMPT],
+    new SystemMessage(SYSTEM_PROMPT),
+    HumanMessagePromptTemplate.fromTemplate(HUMAN_PROMPT),
   ]);
 
   const formatInput = RunnableLambda.from((input: ReviewChainInput) => ({
